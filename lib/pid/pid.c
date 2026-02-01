@@ -1,6 +1,6 @@
 #include "pid.h"
 
-double calc(PID_t *controller, double var, double dt, bool cap)
+double pid_calc(PID_t *controller, double var, double dt, bool limit)
 {
     // Calculate error as of now
     double err = controller->setpoint - var;
@@ -22,7 +22,7 @@ double calc(PID_t *controller, double var, double dt, bool cap)
     double k_final = prop + integ + deriv;
 
     // Capping incase too low or too high. Use at discretion
-    if (cap)
+    if (limit)
     {
         if (k_final < controller->min)
         {

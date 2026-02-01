@@ -21,4 +21,4 @@ typedef struct PID_controller
 /// @param var Environment variable, data
 /// @param dt Time step (ms)
 /// @return Proportional term
-double calc(PID_t *controller, double var, double dt, bool cap);
+double pid_calc(PID_t *controller, double var, double dt, bool cap);
