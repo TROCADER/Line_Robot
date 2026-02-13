@@ -3,8 +3,11 @@
 #include "pins.h"
 #include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/pgmspace.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <util/atomic.h>
+#include <util/delay.h>
 
 #define TIME_SLICE 10.0
 
@@ -12,6 +15,7 @@ static PID_t *pid_cont = NULL;
 
 static uint16_t lsensor = 0;
 static uint16_t rsensor = 0;
+static uint16_t sensor[IR_SENSORS_NR];
 
 static uint16_t base_speed = 100;
 static uint16_t max_speed = 200;
@@ -21,6 +25,44 @@ static uint16_t lspeed = 0;
 static uint16_t rspeed = 0;
 
 static double dt = TIME_SLICE;
+
+/**ande seminarium
+Thursday, March 12⋅13:15 – 17:00
+
+ * prepare the re-routing of stdout to UART2
+ */
+static int uart_putchar(char c, FILE *stream);
+static int uart_getchar(FILE *stream);
+static FILE mystdout = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+
+/**
+ * @param baudrate - UART baudrate
+ * @brief initializes the UART module
+ */
+void UARTInit(uint32_t baudrate)
+{
+    uint16_t baud;
+    baud = ((float)(F_CPU * 64 / (16 * (float)baudrate)) + 0.5);
+    PORTMUX.USARTROUTEA = PORTMUX_USART2_DEFAULT_gc; // TxD PF0, RxD PF1
+    PORTF.DIRSET = PIN0_bm;
+    USART2.BAUD = baud;
+    USART2.CTRLB = USART_TXEN_bm | USART_RXEN_bm;
+    USART2.CTRLC = USART_CMODE_ASYNCHRONOUS_gc | USART_PMODE_DISABLED_gc | USART_SBMODE_1BIT_gc | USART_CHSIZE_8BIT_gc;
+    USART2.CTRLA = 0;
+    stdout = &mystdout;
+}
+
+/**
+ * @param c - char/byte to send
+ * @brief send a byte to USART2, used for stdout
+ */
+static int uart_putchar(char c, FILE *stream)
+{
+    while (!(USART2.STATUS & USART_DREIF_bm))
+        ;               // wait if still transmitting
+    USART2.TXDATAL = c; // next byte into the send register
+    return 0;
+}
 
 ISR(RTC_PIT_vect)
 {
@@ -60,12 +102,14 @@ ISR(RTC_PIT_vect)
     }
 
     // TODO: Apply power to motors
+    printf("Interrupt!\n");
 
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
 
 int main(void)
 {
+    UARTInit(19200);
     sei();
 
     init_pins();
@@ -77,8 +121,14 @@ int main(void)
 
     while (true)
     {
-        read_sensor(PIN_LEFT_IR_ANALOG, lsensor);
-        read_sensor(PIN_RIGHT_IR_ANALOG, rsensor);
+        // read_sensor(PIN_LEFT_IR_ANALOG, lsensor);
+        // read_sensor(PIN_RIGHT_IR_ANALOG, rsensor);
+        for (uint8_t i = 0; i < IR_SENSORS_NR; i++)
+        {
+            read_sensor(i, &sensor[i]);
+            printf("Sensor %d: %d\n", i, sensor[i]);
+            _delay_ms(100);
+        }
     }
 
     return 0;
@@ -88,12 +138,12 @@ void read_sensor(uint8_t sensor, uint16_t *sensor_data)
 {
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
-        PORTD.DIR = sensor;
+        ADC0.MUXPOS = sensor;
         ADC0.COMMAND = ADC_STCONV_bm;
         while (ADC0.COMMAND & ADC_SPCONV_bm)
         {
         }
-        sensor_data = ADC0.RES;
+        *sensor_data = ADC0.RES;
     }
 }
 
@@ -112,8 +162,11 @@ void init_pid()
 
 void init_adc()
 {
+    VREF.ADC0REF = VREF_REFSEL_VDD_gc;
     PORTD.PIN0CTRL = PORT_ISC_INPUT_DISABLE_gc;
     PORTD.PIN1CTRL = PORT_ISC_INPUT_DISABLE_gc;
+    // PORTD.PIN2CTRL = PORT_ISC_INPUT_DISABLE_gc;
+    // PORTD.PIN3CTRL = PORT_ISC_INPUT_DISABLE_gc;
 
     ADC0.CTRLA = 0 << ADC_CONVMODE_bp | ADC_RESSEL_12BIT_gc | ADC_ENABLE_bm;
     ADC0.CTRLB = ADC_SAMPNUM_NONE_gc;
@@ -129,7 +182,7 @@ void init_rtc()
 {
     RTC.CTRLA = RTC_PRESCALER_DIV1_gc;
     RTC.CLKSEL = CLKSEL_OSC32K_gc;
-    RTC.PITCTRLA = RTC_PITEN_bm;
+    RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC256_gc;
     RTC.PITINTCTRL = RTC_PI_bm;
 }
 
