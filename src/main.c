@@ -9,9 +9,10 @@
 #include <util/atomic.h>
 #include <util/delay.h>
 
-#define TIME_SLICE 10.0
+#define TIME_SLICE (256.0/32768.0)
 
-static PID_t *pid_cont = NULL;
+static PID_t *pid_contA = NULL;
+static PID_t *pid_contB = NULL;
 
 static uint16_t lsensor = 0;
 static uint16_t rsensor = 0;
@@ -20,11 +21,6 @@ static uint16_t sensor[IR_SENSORS_NR];
 static uint16_t base_speed = 100;
 static uint16_t max_speed = 200;
 static uint16_t min_speed = 0;
-
-static uint16_t lspeed = 0;
-static uint16_t rspeed = 0;
-
-static double dt = TIME_SLICE;
 
 /**ande seminarium
 Thursday, March 12⋅13:15 – 17:00
@@ -66,43 +62,22 @@ static int uart_putchar(char c, FILE *stream)
 
 ISR(RTC_PIT_vect)
 {
-    uint16_t sensor_tot = lsensor + rsensor;
+    uint16_t sensor_tot = sensor[0] + sensor[1];
     double sensor_diff = 0.0;
 
-    if (sensor_tot /= 0)
-    {
-        sensor_diff = (lsensor - rsensor) / sensor_tot;
-    }
-    else
-    {
-        sensor_diff = 0.0;
-    }
+    sensor_diff = (sensor[0] - sensor[1]) / sensor_tot;
+    double correctionA = pid_calc(pid_contA, sensor_diff, TIME_SLICE, false);
+    double correctionB = pid_calc(pid_contB, sensor_diff, TIME_SLICE, false);
 
-    double correction = pid_calc(pid_cont, sensor_diff, dt, false);
+    uint16_t lspeed = base_speed + correctionA;
+    uint16_t rspeed = base_speed + correctionB;
 
-    lspeed = base_speed - correction;
-    lspeed = base_speed + correction;
-
-    if (lspeed > max_speed)
-    {
-        lspeed = max_speed;
-    }
-    if (lspeed < min_speed)
-    {
-        lspeed = min_speed;
-    }
-
-    if (rspeed > max_speed)
-    {
-        rspeed = max_speed;
-    }
-    if (rspeed < min_speed)
-    {
-        rspeed = min_speed;
-    }
+    printf("Left Speed: %d\n", lspeed);
+    printf("Right Speed: %d\n", rspeed);
 
     // TODO: Apply power to motors
-    printf("Interrupt!\n");
+    TCA0.SINGLE.CMP0 = -lspeed;
+    TCA0.SINGLE.CMP1 = -rspeed;
 
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
@@ -113,16 +88,14 @@ int main(void)
     sei();
 
     init_pins();
-
-    init_rtc();
     init_adc();
-
-    init_pid();
+    init_tca();
+    init_pidA();
+    init_pidB();
+    init_rtc();
 
     while (true)
     {
-        // read_sensor(PIN_LEFT_IR_ANALOG, lsensor);
-        // read_sensor(PIN_RIGHT_IR_ANALOG, rsensor);
         for (uint8_t i = 0; i < IR_SENSORS_NR; i++)
         {
             read_sensor(i, &sensor[i]);
@@ -147,17 +120,30 @@ void read_sensor(uint8_t sensor, uint16_t *sensor_data)
     }
 }
 
-void init_pid()
+void init_pidA()
 {
-    pid_cont = calloc(1, sizeof(PID_t));
-    pid_cont->Kp = 100;
-    pid_cont->Ki = 100;
-    pid_cont->Kd = 100;
-    pid_cont->integ = 0;
-    pid_cont->min = 0;
-    pid_cont->max = 100;
-    pid_cont->setpoint = 0;
-    pid_cont->prev_err = 0;
+    pid_contA = calloc(1, sizeof(PID_t));
+    pid_contA->Kp = 50;
+    pid_contA->Ki = 0;
+    pid_contA->Kd = 0;
+    pid_contA->integ = 0;
+    pid_contA->min = -100;
+    pid_contA->max = 100;
+    pid_contA->setpoint = 0;
+    pid_contA->prev_err = 0;
+}
+
+void init_pidB()
+{
+    pid_contB = calloc(1, sizeof(PID_t));
+    pid_contB->Kp = 50;
+    pid_contB->Ki = 0;
+    pid_contB->Kd = 0;
+    pid_contB->integ = 0;
+    pid_contB->min = -100;
+    pid_contB->max = 100;
+    pid_contB->setpoint = 0;
+    pid_contB->prev_err = 0;
 }
 
 void init_adc()
@@ -186,12 +172,20 @@ void init_rtc()
     RTC.PITINTCTRL = RTC_PI_bm;
 }
 
+void init_tca()
+{
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0_bm | TCA_SINGLE_CMP1_bm | TCA_SINGLE_WGMODE_DSBOTTOM_gc;
+    TCA0.SINGLE.PER = 32768;
+    PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
+}
+
 void init_pins()
 {
     // Initialize all pins
     // PIN A - Motors
-    PORTA.DIR = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
-    PORTA.OUT = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
+    PORTA.DIRSET = PIN0_bm | PIN1_bm;
+    // PORTC.OUT = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
 
     // PIN D - Sensors
     // PORTD.DIR = 0 | PIN_LEFT_IR_ANALOG | PIN_RIGHT_IR_ANALOG;
