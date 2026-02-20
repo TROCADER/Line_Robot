@@ -101,8 +101,8 @@ ISR(RTC_PIT_vect)
 
         previous_error = error;
 
-        left_speed = base_speed - correction;
-        right_speed = base_speed + correction;
+        left_speed = (int16_t)(base_speed - (int16_t)correction);
+        right_speed = (int16_t)(base_speed + (int16_t)correction);
     }
 
     motor_drive(left_speed, right_speed);
@@ -208,7 +208,7 @@ int16_t compute_line_error(const uint16_t values[])
     for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
     {
         uint16_t level = values[i];
-        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (QTR_MAX_TIME - level);
+        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (uint16_t)(QTR_MAX_TIME - level);
 
         if (strength < LINE_MIN_STRENGTH)
         {
@@ -216,7 +216,7 @@ int16_t compute_line_error(const uint16_t values[])
         }
 
         strength_sum += strength;
-        weighted_sum += strength * (i * 1000U);
+        weighted_sum += (uint32_t)strength * (uint32_t)(i * 1000U);
     }
 
     if (strength_sum == 0)
