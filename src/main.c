@@ -1,4 +1,5 @@
 #include "main.h"
+#include "../lib/echo/echo.h"
 #include "../lib/pid/pid.h"
 #include "../lib/qtr/qtr.h"
 #include "pins.h"
@@ -22,6 +23,7 @@
 static PID_t *pid_cont = NULL;
 
 static volatile uint16_t sensor[QTR_SENSOR_COUNT];
+static volatile uint16_t echo;
 
 static uint16_t base_speed = 100;
 static uint16_t max_speed = 200;
@@ -118,11 +120,16 @@ int main(void)
     init_pid();
     init_rtc();
     qtr_init();
+    echo_init();
 
     while (true)
     {
         uint16_t qtr_values[QTR_SENSOR_COUNT];
+        uint16_t distance_cm;
+
         qtr_read(qtr_values, true);
+        echo = echo_read();
+        distance_cm = echo_to_cm(echo);
 
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
         {
@@ -132,7 +139,7 @@ int main(void)
             }
         }
 
-        printf("S: %u %u %u %u %u\n", sensor[0], sensor[1], sensor[2], sensor[3], sensor[4]);
+        printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3], sensor[4], echo, distance_cm);
 
         _delay_ms(25);
     }
