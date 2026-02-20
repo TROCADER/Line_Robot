@@ -5,30 +5,39 @@
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <avr/pgmspace.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <util/atomic.h>
 #include <util/delay.h>
 
-#define TIME_SLICE (256.0 / 32768.0)
+#define RTC_PIT_CYCLES 256.0
+#define RTC_CLOCK_HZ 32768.0
+#define PID_DT_MS ((RTC_PIT_CYCLES * 1000.0) / RTC_CLOCK_HZ)
+#define LINE_POSITION_CENTER 2000
+#define WHITE_LEVEL_THRESHOLD 2950
+#define MOTOR_TURN_SPEED 180
+#define LINE_MIN_STRENGTH 30
 
-static PID_t *pid_contA = NULL;
-static PID_t *pid_contB = NULL;
+static PID_t *pid_cont = NULL;
 
-static uint16_t sensor[QTR_SENSOR_COUNT];
+static volatile uint16_t sensor[QTR_SENSOR_COUNT];
 
 static uint16_t base_speed = 100;
 static uint16_t max_speed = 200;
 static uint16_t min_speed = 0;
+static volatile int16_t previous_error = 0;
 
 /**
-Thursday, March 12⋅13:15 – 17:00
-
  * prepare the re-routing of stdout to UART2
  */
 static int uart_putchar(char c, FILE *stream);
-static int uart_getchar(FILE *stream);
 static FILE mystdout = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+
+static bool all_sensors_white(const uint16_t values[]);
+static int16_t compute_line_error(const uint16_t values[]);
+static int16_t clamp_speed(int16_t speed);
+static void motor_drive(int16_t left_speed, int16_t right_speed);
 
 /**
  * @param baudrate - UART baudrate
@@ -61,27 +70,40 @@ static int uart_putchar(char c, FILE *stream)
 
 ISR(RTC_PIT_vect)
 {
-    uint16_t left_sum = sensor[0] + sensor[1];
-    uint16_t right_sum = sensor[3] + sensor[4];
-    uint16_t total = left_sum + right_sum + sensor[2];
-    double sensor_diff = 0.0;
+    uint16_t sensor_snapshot[QTR_SENSOR_COUNT];
+    int16_t left_speed;
+    int16_t right_speed;
 
-    if (total > 0)
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
     {
-        sensor_diff = ((double)left_sum - (double)right_sum) / (double)total;
+        sensor_snapshot[i] = sensor[i];
     }
-    double correctionA = pid_calc(pid_contA, sensor_diff, TIME_SLICE, false);
-    double correctionB = pid_calc(pid_contB, sensor_diff, TIME_SLICE, false);
 
-    uint16_t lspeed = base_speed + correctionA;
-    uint16_t rspeed = base_speed + correctionB;
+    if (all_sensors_white(sensor_snapshot))
+    {
+        if (previous_error > 0)
+        {
+            left_speed = min_speed;
+            right_speed = MOTOR_TURN_SPEED;
+        }
+        else
+        {
+            left_speed = MOTOR_TURN_SPEED;
+            right_speed = min_speed;
+        }
+    }
+    else
+    {
+        int16_t error = compute_line_error(sensor_snapshot);
+        double correction = pid_calc(pid_cont, (double)error, PID_DT_MS, true);
 
-    printf("Left Speed: %d\n", lspeed);
-    printf("Right Speed: %d\n", rspeed);
+        previous_error = error;
 
-    // TODO: Apply power to motors
-    TCA0.SINGLE.CMP0 = -lspeed;
-    TCA0.SINGLE.CMP1 = -rspeed;
+        left_speed = (int16_t)((int16_t)base_speed - (int16_t)correction);
+        right_speed = (int16_t)((int16_t)base_speed + (int16_t)correction);
+    }
+
+    motor_drive(left_speed, right_speed);
 
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
@@ -93,8 +115,7 @@ int main(void)
 
     init_pins();
     init_tca();
-    init_pidA();
-    init_pidB();
+    init_pid();
     init_rtc();
     qtr_init();
 
@@ -111,41 +132,25 @@ int main(void)
             }
         }
 
-        for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
-        {
-            printf("Sensor %d: %d\n", i, sensor[i]);
-        }
+        printf("S: %u %u %u %u %u\n", sensor[0], sensor[1], sensor[2], sensor[3], sensor[4]);
 
-        _delay_ms(100);
+        _delay_ms(25);
     }
 
     return 0;
 }
 
-void init_pidA()
+void init_pid()
 {
-    pid_contA = calloc(1, sizeof(PID_t));
-    pid_contA->Kp = 50;
-    pid_contA->Ki = 0;
-    pid_contA->Kd = 0;
-    pid_contA->integ = 0;
-    pid_contA->min = -100;
-    pid_contA->max = 100;
-    pid_contA->setpoint = 0;
-    pid_contA->prev_err = 0;
-}
-
-void init_pidB()
-{
-    pid_contB = calloc(1, sizeof(PID_t));
-    pid_contB->Kp = 50;
-    pid_contB->Ki = 0;
-    pid_contB->Kd = 0;
-    pid_contB->integ = 0;
-    pid_contB->min = -100;
-    pid_contB->max = 100;
-    pid_contB->setpoint = 0;
-    pid_contB->prev_err = 0;
+    pid_cont = calloc(1, sizeof(PID_t));
+    pid_cont->Kp = 0.08;
+    pid_cont->Ki = 0.0;
+    pid_cont->Kd = 0.45;
+    pid_cont->integ = 0;
+    pid_cont->min = -(double)max_speed;
+    pid_cont->max = (double)max_speed;
+    pid_cont->setpoint = 0;
+    pid_cont->prev_err = 0;
 }
 
 void init_rtc()
@@ -158,16 +163,81 @@ void init_rtc()
 
 void init_tca()
 {
-    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
-    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0_bm | TCA_SINGLE_CMP1_bm | TCA_SINGLE_WGMODE_DSBOTTOM_gc;
-    TCA0.SINGLE.PER = 32768;
+    TCA0.SINGLE.CTRLA = 0;
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_CMP1EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+    TCA0.SINGLE.PER = 255;
+    TCA0.SINGLE.CMP0BUF = 0;
+    TCA0.SINGLE.CMP1BUF = 0;
     PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
 }
 
 void init_pins()
 {
     // Initialize all pins
-    // PIN A - Motors
+    // TCA0 WO0/WO1 on PA0/PA1
     PORTA.DIRSET = PIN0_bm | PIN1_bm;
-    // PORTC.OUT = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
+}
+
+static bool all_sensors_white(const uint16_t values[])
+{
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+    {
+        if (values[i] < WHITE_LEVEL_THRESHOLD)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static int16_t compute_line_error(const uint16_t values[])
+{
+    uint32_t weighted_sum = 0;
+    uint32_t strength_sum = 0;
+
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+    {
+        uint16_t level = values[i];
+        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (uint16_t)(QTR_MAX_TIME - level);
+
+        if (strength < LINE_MIN_STRENGTH)
+        {
+            strength = 0;
+        }
+
+        strength_sum += strength;
+        weighted_sum += (uint32_t)strength * (uint32_t)(i * 1000U);
+    }
+
+    if (strength_sum == 0)
+    {
+        return previous_error;
+    }
+
+    int16_t position = (int16_t)(weighted_sum / strength_sum);
+    return (int16_t)(LINE_POSITION_CENTER - position);
+}
+
+static int16_t clamp_speed(int16_t speed)
+{
+    if (speed > (int16_t)max_speed)
+    {
+        return (int16_t)max_speed;
+    }
+    if (speed < (int16_t)min_speed)
+    {
+        return (int16_t)min_speed;
+    }
+    return speed;
+}
+
+static void motor_drive(int16_t left_speed, int16_t right_speed)
+{
+    left_speed = clamp_speed(left_speed);
+    right_speed = clamp_speed(right_speed);
+
+    TCA0.SINGLE.CMP0BUF = (uint16_t)left_speed;
+    TCA0.SINGLE.CMP1BUF = (uint16_t)right_speed;
 }

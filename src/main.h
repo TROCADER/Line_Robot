@@ -7,4 +7,4 @@ void init_rtc();
 
 void init_tca();
 
-void init_pidA();
+void init_pid();
