@@ -25,9 +25,9 @@ static PID_t *pid_cont = NULL;
 static volatile uint16_t sensor[QTR_SENSOR_COUNT];
 static volatile uint16_t echo;
 
-static uint16_t base_speed = 100;
-static uint16_t max_speed = 200;
-static uint16_t min_speed = 0;
+static int16_t base_speed = 100;
+static int16_t max_speed = 200;
+static int16_t min_speed = 0;
 static volatile int16_t previous_error = 0;
 
 /**
@@ -101,8 +101,8 @@ ISR(RTC_PIT_vect)
 
         previous_error = error;
 
-        left_speed = (int16_t)((int16_t)base_speed - (int16_t)correction);
-        right_speed = (int16_t)((int16_t)base_speed + (int16_t)correction);
+        left_speed = base_speed - correction;
+        right_speed = base_speed + correction;
     }
 
     motor_drive(left_speed, right_speed);
@@ -139,7 +139,8 @@ int main(void)
             }
         }
 
-        printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3], sensor[4], echo, distance_cm);
+        printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3],
+               sensor[4], echo, distance_cm);
 
         _delay_ms(25);
     }
@@ -163,7 +164,7 @@ void init_pid()
 void init_rtc()
 {
     RTC.CTRLA = RTC_PRESCALER_DIV1_gc;
-    RTC.CLKSEL = CLKSEL_OSC32K_gc;
+    RTC.CLKSEL = CLKSEL_OSC32K_gc; // 32768.0
     RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC256_gc;
     RTC.PITINTCTRL = RTC_PI_bm;
 }
@@ -186,7 +187,7 @@ void init_pins()
     PORTA.DIRSET = PIN0_bm | PIN1_bm;
 }
 
-static bool all_sensors_white(const uint16_t values[])
+bool all_sensors_white(const uint16_t values[])
 {
     for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
     {
@@ -199,15 +200,15 @@ static bool all_sensors_white(const uint16_t values[])
     return true;
 }
 
-static int16_t compute_line_error(const uint16_t values[])
+int16_t compute_line_error(const uint16_t values[])
 {
-    uint32_t weighted_sum = 0;
-    uint32_t strength_sum = 0;
+    uint16_t weighted_sum = 0;
+    uint16_t strength_sum = 0;
 
     for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
     {
         uint16_t level = values[i];
-        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (uint16_t)(QTR_MAX_TIME - level);
+        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (QTR_MAX_TIME - level);
 
         if (strength < LINE_MIN_STRENGTH)
         {
@@ -215,7 +216,7 @@ static int16_t compute_line_error(const uint16_t values[])
         }
 
         strength_sum += strength;
-        weighted_sum += (uint32_t)strength * (uint32_t)(i * 1000U);
+        weighted_sum += strength * (i * 1000U);
     }
 
     if (strength_sum == 0)
@@ -223,28 +224,28 @@ static int16_t compute_line_error(const uint16_t values[])
         return previous_error;
     }
 
-    int16_t position = (int16_t)(weighted_sum / strength_sum);
-    return (int16_t)(LINE_POSITION_CENTER - position);
+    int16_t position = (weighted_sum / strength_sum);
+    return (LINE_POSITION_CENTER - position);
 }
 
-static int16_t clamp_speed(int16_t speed)
+int16_t clamp_speed(int16_t speed)
 {
-    if (speed > (int16_t)max_speed)
+    if (speed > max_speed)
     {
-        return (int16_t)max_speed;
+        return max_speed;
     }
-    if (speed < (int16_t)min_speed)
+    if (speed < min_speed)
     {
-        return (int16_t)min_speed;
+        return min_speed;
     }
     return speed;
 }
 
-static void motor_drive(int16_t left_speed, int16_t right_speed)
+void motor_drive(int16_t left_speed, int16_t right_speed)
 {
     left_speed = clamp_speed(left_speed);
     right_speed = clamp_speed(right_speed);
 
-    TCA0.SINGLE.CMP0BUF = (uint16_t)left_speed;
-    TCA0.SINGLE.CMP1BUF = (uint16_t)right_speed;
+    TCA0.SINGLE.CMP0BUF = left_speed;
+    TCA0.SINGLE.CMP1BUF = right_speed;
 }
