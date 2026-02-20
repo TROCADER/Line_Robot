@@ -1,5 +1,6 @@
 #include "main.h"
 #include "../lib/pid/pid.h"
+#include "../lib/qtr/qtr.h"
 #include "pins.h"
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -9,20 +10,18 @@
 #include <util/atomic.h>
 #include <util/delay.h>
 
-#define TIME_SLICE (256.0/32768.0)
+#define TIME_SLICE (256.0 / 32768.0)
 
 static PID_t *pid_contA = NULL;
 static PID_t *pid_contB = NULL;
 
-static uint16_t lsensor = 0;
-static uint16_t rsensor = 0;
-static uint16_t sensor[IR_SENSORS_NR];
+static uint16_t sensor[QTR_SENSOR_COUNT];
 
 static uint16_t base_speed = 100;
 static uint16_t max_speed = 200;
 static uint16_t min_speed = 0;
 
-/**ande seminarium
+/**
 Thursday, March 12⋅13:15 – 17:00
 
  * prepare the re-routing of stdout to UART2
@@ -62,10 +61,15 @@ static int uart_putchar(char c, FILE *stream)
 
 ISR(RTC_PIT_vect)
 {
-    uint16_t sensor_tot = sensor[0] + sensor[1];
+    uint16_t left_sum = sensor[0] + sensor[1];
+    uint16_t right_sum = sensor[3] + sensor[4];
+    uint16_t total = left_sum + right_sum + sensor[2];
     double sensor_diff = 0.0;
 
-    sensor_diff = (sensor[0] - sensor[1]) / sensor_tot;
+    if (total > 0)
+    {
+        sensor_diff = ((double)left_sum - (double)right_sum) / (double)total;
+    }
     double correctionA = pid_calc(pid_contA, sensor_diff, TIME_SLICE, false);
     double correctionB = pid_calc(pid_contB, sensor_diff, TIME_SLICE, false);
 
@@ -88,36 +92,34 @@ int main(void)
     sei();
 
     init_pins();
-    init_adc();
     init_tca();
     init_pidA();
     init_pidB();
     init_rtc();
+    qtr_init();
 
     while (true)
     {
-        for (uint8_t i = 0; i < IR_SENSORS_NR; i++)
+        uint16_t qtr_values[QTR_SENSOR_COUNT];
+        qtr_read(qtr_values, true);
+
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
         {
-            read_sensor(i, &sensor[i]);
-            printf("Sensor %d: %d\n", i, sensor[i]);
-            _delay_ms(100);
+            for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+            {
+                sensor[i] = qtr_values[i];
+            }
         }
+
+        for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+        {
+            printf("Sensor %d: %d\n", i, sensor[i]);
+        }
+
+        _delay_ms(100);
     }
 
     return 0;
-}
-
-void read_sensor(uint8_t sensor, uint16_t *sensor_data)
-{
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        ADC0.MUXPOS = sensor;
-        ADC0.COMMAND = ADC_STCONV_bm;
-        while (ADC0.COMMAND & ADC_SPCONV_bm)
-        {
-        }
-        *sensor_data = ADC0.RES;
-    }
 }
 
 void init_pidA()
@@ -146,24 +148,6 @@ void init_pidB()
     pid_contB->prev_err = 0;
 }
 
-void init_adc()
-{
-    VREF.ADC0REF = VREF_REFSEL_VDD_gc;
-    PORTD.PIN0CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    PORTD.PIN1CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    // PORTD.PIN2CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    // PORTD.PIN3CTRL = PORT_ISC_INPUT_DISABLE_gc;
-
-    ADC0.CTRLA = 0 << ADC_CONVMODE_bp | ADC_RESSEL_12BIT_gc | ADC_ENABLE_bm;
-    ADC0.CTRLB = ADC_SAMPNUM_NONE_gc;
-    ADC0.CTRLC = ADC_PRESC_DIV20_gc; // 4MHz/20 = 200KHz TODO: Probably needs tuning
-    ADC0.CTRLD = ADC_INITDLY_DLY0_gc | ADC_SAMPDLY_DLY0_gc;
-    ADC0.CTRLE = ADC_WINCM0_bp;
-    ADC0.SAMPCTRL = ADC_SAMPLEN0_bp;
-    ADC0.MUXPOS = ADC_MUXPOS_AIN0_gc;
-    ADC0.MUXNEG = ADC_MUXNEG_GND_gc;
-}
-
 void init_rtc()
 {
     RTC.CTRLA = RTC_PRESCALER_DIV1_gc;
@@ -186,8 +170,4 @@ void init_pins()
     // PIN A - Motors
     PORTA.DIRSET = PIN0_bm | PIN1_bm;
     // PORTC.OUT = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
-
-    // PIN D - Sensors
-    // PORTD.DIR = 0 | PIN_LEFT_IR_ANALOG | PIN_RIGHT_IR_ANALOG;
-    // PORTD.IN = 0 | PIN_LEFT_IR_ANALOG | PIN_RIGHT_IR_ANALOG;
 }
