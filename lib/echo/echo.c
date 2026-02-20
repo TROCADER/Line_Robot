@@ -14,13 +14,13 @@ void echo_init(void)
     PORTC.DIRCLR = ECHO_ECHO_MASK;
     PORTC.OUTCLR = ECHO_ECHO_MASK;
 
-    TCB1.CTRLA = 0;
-    TCB1.CTRLB = TCB_CNTMODE_INT_gc;
-    TCB1.CCMP = 0xFFFF;
-    TCB1.CNT = 0;
-    TCB1.INTCTRL = 0;
-    TCB1.INTFLAGS = TCB_CAPT_bm;
-    TCB1.CTRLA = TCB_CLKSEL_DIV2_gc | TCB_ENABLE_bm;
+    TCB0.CTRLA = 0;
+    TCB0.CTRLB = TCB_CNTMODE_INT_gc;
+    TCB0.CCMP = 0xFFFF;
+    TCB0.CNT = 0;
+    TCB0.INTCTRL = 0;
+    TCB0.INTFLAGS = TCB_CAPT_bm;
+    TCB0.CTRLA = TCB_CLKSEL_DIV2_gc | TCB_ENABLE_bm;
 }
 
 uint16_t echo_read(void)
@@ -31,8 +31,8 @@ uint16_t echo_read(void)
     _delay_us(10);
     PORTC.OUTCLR = ECHO_TRIG_MASK;
 
-    TCB1.CNT = 0;
-    while (((PORTC.IN & ECHO_ECHO_MASK) == 0U) && (TCB1.CNT < ECHO_TIMEOUT_TICKS))
+    TCB0.CNT = 0;
+    while (((PORTC.IN & ECHO_ECHO_MASK) == 0U) && (TCB0.CNT < ECHO_TIMEOUT_TICKS))
     {
     }
 
@@ -41,12 +41,12 @@ uint16_t echo_read(void)
         return 0U;
     }
 
-    TCB1.CNT = 0;
-    while (((PORTC.IN & ECHO_ECHO_MASK) != 0U) && (TCB1.CNT < ECHO_TIMEOUT_TICKS))
+    TCB0.CNT = 0;
+    while (((PORTC.IN & ECHO_ECHO_MASK) != 0U) && (TCB0.CNT < ECHO_TIMEOUT_TICKS))
     {
     }
 
-    uint16_t pulse_ticks = TCB1.CNT;
+    uint16_t pulse_ticks = TCB0.CNT;
     uint16_t pulse_us = (uint16_t)(pulse_ticks / ECHO_TICKS_PER_US);
 
     return pulse_us;
