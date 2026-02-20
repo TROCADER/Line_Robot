@@ -202,8 +202,8 @@ bool all_sensors_white(const uint16_t values[])
 
 int16_t compute_line_error(const uint16_t values[])
 {
-    uint16_t weighted_sum = 0;
-    uint16_t strength_sum = 0;
+    uint32_t weighted_sum = 0;
+    uint32_t strength_sum = 0;
 
     for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
     {
@@ -224,8 +224,8 @@ int16_t compute_line_error(const uint16_t values[])
         return previous_error;
     }
 
-    int16_t position = (weighted_sum / strength_sum);
-    return (LINE_POSITION_CENTER - position);
+    int16_t position = (int16_t)(weighted_sum / strength_sum);
+    return (int16_t)(LINE_POSITION_CENTER - position);
 }
 
 int16_t clamp_speed(int16_t speed)
@@ -243,8 +243,9 @@ int16_t clamp_speed(int16_t speed)
 
 void motor_drive(int16_t left_speed, int16_t right_speed)
 {
-    left_speed = clamp_speed(left_speed);
-    right_speed = clamp_speed(right_speed);
+    float scale = echo_power_scale(echo);
+    left_speed = (int)clamp_speed(left_speed) * scale;
+    right_speed = (int)clamp_speed(right_speed) * scale;
 
     TCA0.SINGLE.CMP0BUF = left_speed;
     TCA0.SINGLE.CMP1BUF = right_speed;

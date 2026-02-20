@@ -4,10 +4,10 @@
 #include <util/delay.h>
 
 #define ECHO_TIMEOUT_US 30000U
-#define ECHO_TICKS_PER_US 2// 4MHz / ((prescaler) 2 * 10^6) = 2 
+#define ECHO_TICKS_PER_US 2 // 4MHz / ((prescaler) 2 * 10^6) = 2 
 #define ECHO_TIMEOUT_TICKS (ECHO_TIMEOUT_US * ECHO_TICKS_PER_US)
 
-void echo_init(void)
+void echo_init()
 {
     PORTC.DIRSET = ECHO_TRIG_MASK;
     PORTC.OUTCLR = ECHO_TRIG_MASK;
@@ -23,7 +23,7 @@ void echo_init(void)
     TCB1.CTRLA = TCB_CLKSEL_DIV2_gc | TCB_ENABLE_bm;
 }
 
-uint16_t echo_read(void)
+uint16_t echo_read()
 {
     PORTC.OUTCLR = ECHO_TRIG_MASK;
     _delay_us(2);
@@ -60,4 +60,20 @@ uint16_t echo_to_cm(uint16_t pulse_us)
     }
 
     return (pulse_us / 58U);
+}
+
+float echo_power_scale(uint16_t pulse_us)
+{
+    if (pulse_us < 1000)
+    {
+        float scale = (float)pulse_us / 1000.0f;
+        
+        if (scale > 0.25)
+        {
+            return scale;
+        }
+        return 0.0;
+    }
+    
+    return 1.0;
 }

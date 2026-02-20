@@ -13,7 +13,7 @@ static const uint8_t qtr_masks[QTR_SENSOR_COUNT] = {
     PIN0_bm, PIN1_bm, PIN2_bm, PIN3_bm, PIN4_bm,
 };
 
-void qtr_init(void)
+void qtr_init()
 {
     PORTD.DIRCLR = QTR_SENSOR_MASK;
     PORTD.OUTCLR = QTR_SENSOR_MASK;
