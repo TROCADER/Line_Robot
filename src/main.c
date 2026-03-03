@@ -12,7 +12,7 @@
 #include <util/atomic.h>
 #include <util/delay.h>
 
-#define RTC_PIT_CYCLES 256.0
+#define RTC_PIT_CYCLES 64.0
 #define RTC_CLOCK_HZ 32768.0
 #define PID_DT_MS ((RTC_PIT_CYCLES * 1000.0) / RTC_CLOCK_HZ)
 #define LINE_POSITION_CENTER 2000
@@ -107,6 +107,8 @@ ISR(RTC_PIT_vect)
 
     motor_drive(left_speed, right_speed);
 
+    // printf("Inter!\n");
+
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
 
@@ -139,8 +141,8 @@ int main(void)
             }
         }
 
-        printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3],
-               sensor[4], echo, distance_cm);
+        // printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3],
+            //    sensor[4], echo, distance_cm);
 
         _delay_ms(25);
     }
@@ -150,22 +152,25 @@ int main(void)
 
 void init_pid()
 {
+    // Ku = 0.4
+    // Tu = 0.5s = 500ms
+    // Ti = 0.5Tu = 250ms
     pid_cont = calloc(1, sizeof(PID_t));
-    pid_cont->Kp = 0.08;
+    pid_cont->Kp = 0.2;
     pid_cont->Ki = 0.0;
-    pid_cont->Kd = 0.45;
-    pid_cont->integ = 0;
+    pid_cont->Kd = 0.0;
+    pid_cont->integ = 0.0;
     pid_cont->min = -(double)max_speed;
     pid_cont->max = (double)max_speed;
-    pid_cont->setpoint = 0;
-    pid_cont->prev_err = 0;
+    pid_cont->setpoint = 0.0;
+    pid_cont->prev_err = 0.0;
 }
 
 void init_rtc()
 {
     RTC.CTRLA = RTC_PRESCALER_DIV1_gc;
     RTC.CLKSEL = CLKSEL_OSC32K_gc; // 32768.0
-    RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC256_gc;
+    RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC64_gc;
     RTC.PITINTCTRL = RTC_PI_bm;
 }
 
