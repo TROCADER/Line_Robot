@@ -1,35 +1,47 @@
 #include "main.h"
+#include "../lib/echo/echo.h"
 #include "../lib/pid/pid.h"
+#include "../lib/qtr/qtr.h"
 #include "pins.h"
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <avr/pgmspace.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <util/atomic.h>
 #include <util/delay.h>
 
-#define TIME_SLICE (256.0/32768.0)
+#define RTC_PIT_CYCLES 64.0
+#define RTC_CLOCK_HZ 32768.0
+#define PID_DT_MS ((RTC_PIT_CYCLES * 1000.0) / RTC_CLOCK_HZ)
+#define LINE_POSITION_CENTER 2000
+#define WHITE_LEVEL_THRESHOLD 2950
+#define MOTOR_TURN_SPEED 180
+#define LINE_MIN_STRENGTH 30
 
-static PID_t *pid_contA = NULL;
-static PID_t *pid_contB = NULL;
+static PID_t *pid_cont = NULL;
 
-static uint16_t lsensor = 0;
-static uint16_t rsensor = 0;
-static uint16_t sensor[IR_SENSORS_NR];
+static volatile uint16_t sensor[QTR_SENSOR_COUNT];
+static volatile uint16_t echo;
 
-static uint16_t base_speed = 100;
-static uint16_t max_speed = 200;
-static uint16_t min_speed = 0;
+static int16_t base_speed = 120;
+static int16_t max_speed = 200;
+static int16_t min_speed = 0;
+static volatile int16_t previous_error = 0;
 
-/**ande seminarium
-Thursday, March 12⋅13:15 – 17:00
+static volatile bool motors_enabled = false;
 
+/**
  * prepare the re-routing of stdout to UART2
  */
 static int uart_putchar(char c, FILE *stream);
-static int uart_getchar(FILE *stream);
 static FILE mystdout = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+
+static bool all_sensors_white(const uint16_t values[]);
+static int16_t compute_line_error(const uint16_t values[]);
+static int16_t clamp_speed(int16_t speed);
+static void motor_drive(int16_t left_speed, int16_t right_speed);
 
 /**
  * @param baudrate - UART baudrate
@@ -60,24 +72,77 @@ static int uart_putchar(char c, FILE *stream)
     return 0;
 }
 
+void handle_button()
+{
+    static uint8_t last = 1;
+
+    uint8_t state = (PORTA.IN & BTN_PIN) ? 1 : 0;
+
+    if (state != last)
+    {
+        _delay_ms(20); // debounce
+
+        state = (PORTA.IN & BTN_PIN) ? 1 : 0;
+
+        if (state != last)
+        {
+            last = state;
+
+            if (state == 0) // pressed
+            {
+                motors_enabled = !motors_enabled;
+
+                pid_cont->integ = 0;
+                pid_cont->prev_err = 0;
+                previous_error = 0;
+            }
+        }
+    }
+}
+
 ISR(RTC_PIT_vect)
 {
-    uint16_t sensor_tot = sensor[0] + sensor[1];
-    double sensor_diff = 0.0;
+    uint16_t sensor_snapshot[QTR_SENSOR_COUNT];
+    int16_t left_speed;
+    int16_t right_speed;
 
-    sensor_diff = (sensor[0] - sensor[1]) / sensor_tot;
-    double correctionA = pid_calc(pid_contA, sensor_diff, TIME_SLICE, false);
-    double correctionB = pid_calc(pid_contB, sensor_diff, TIME_SLICE, false);
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+    {
+        sensor_snapshot[i] = sensor[i];
+    }
 
-    uint16_t lspeed = base_speed + correctionA;
-    uint16_t rspeed = base_speed + correctionB;
+    if (all_sensors_white(sensor_snapshot))
+    {
+        if (previous_error > 0)
+        {
+            left_speed = min_speed;
+            right_speed = MOTOR_TURN_SPEED;
+        }
+        else
+        {
+            left_speed = MOTOR_TURN_SPEED;
+            right_speed = min_speed;
+        }
+    }
+    else
+    {
+        int16_t error = compute_line_error(sensor_snapshot);
+        double correction = pid_calc(pid_cont, (double)error, PID_DT_MS, true);
 
-    printf("Left Speed: %d\n", lspeed);
-    printf("Right Speed: %d\n", rspeed);
+        previous_error = error;
 
-    // TODO: Apply power to motors
-    TCA0.SINGLE.CMP0 = -lspeed;
-    TCA0.SINGLE.CMP1 = -rspeed;
+        left_speed = (int16_t)(base_speed - (int16_t)correction);
+        right_speed = (int16_t)(base_speed + (int16_t)correction);
+    }
+
+    if (motors_enabled)
+    {
+        motor_drive(left_speed, right_speed);
+    }
+    else
+    {
+        motor_drive(0, 0);
+    }
 
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
@@ -88,106 +153,143 @@ int main(void)
     sei();
 
     init_pins();
-    init_adc();
     init_tca();
-    init_pidA();
-    init_pidB();
+    init_pid();
     init_rtc();
+    qtr_init();
+    echo_init();
 
     while (true)
     {
-        for (uint8_t i = 0; i < IR_SENSORS_NR; i++)
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
         {
-            read_sensor(i, &sensor[i]);
-            printf("Sensor %d: %d\n", i, sensor[i]);
-            _delay_ms(100);
+            handle_button();
+
+            uint16_t qtr_values[QTR_SENSOR_COUNT];
+            uint16_t distance_cm;
+
+            qtr_read(qtr_values, true);
+
+            echo = echo_read();
+            distance_cm = echo_to_cm(echo);
+
+            for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+            {
+                sensor[i] = qtr_values[i];
+            }
         }
+
+        // printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3],
+        //        sensor[4], echo, distance_cm);
+
+        _delay_ms(2);
     }
 
     return 0;
 }
 
-void read_sensor(uint8_t sensor, uint16_t *sensor_data)
+void init_pid()
 {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        ADC0.MUXPOS = sensor;
-        ADC0.COMMAND = ADC_STCONV_bm;
-        while (ADC0.COMMAND & ADC_SPCONV_bm)
-        {
-        }
-        *sensor_data = ADC0.RES;
-    }
-}
-
-void init_pidA()
-{
-    pid_contA = calloc(1, sizeof(PID_t));
-    pid_contA->Kp = 50;
-    pid_contA->Ki = 0;
-    pid_contA->Kd = 0;
-    pid_contA->integ = 0;
-    pid_contA->min = -100;
-    pid_contA->max = 100;
-    pid_contA->setpoint = 0;
-    pid_contA->prev_err = 0;
-}
-
-void init_pidB()
-{
-    pid_contB = calloc(1, sizeof(PID_t));
-    pid_contB->Kp = 50;
-    pid_contB->Ki = 0;
-    pid_contB->Kd = 0;
-    pid_contB->integ = 0;
-    pid_contB->min = -100;
-    pid_contB->max = 100;
-    pid_contB->setpoint = 0;
-    pid_contB->prev_err = 0;
-}
-
-void init_adc()
-{
-    VREF.ADC0REF = VREF_REFSEL_VDD_gc;
-    PORTD.PIN0CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    PORTD.PIN1CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    // PORTD.PIN2CTRL = PORT_ISC_INPUT_DISABLE_gc;
-    // PORTD.PIN3CTRL = PORT_ISC_INPUT_DISABLE_gc;
-
-    ADC0.CTRLA = 0 << ADC_CONVMODE_bp | ADC_RESSEL_12BIT_gc | ADC_ENABLE_bm;
-    ADC0.CTRLB = ADC_SAMPNUM_NONE_gc;
-    ADC0.CTRLC = ADC_PRESC_DIV20_gc; // 4MHz/20 = 200KHz TODO: Probably needs tuning
-    ADC0.CTRLD = ADC_INITDLY_DLY0_gc | ADC_SAMPDLY_DLY0_gc;
-    ADC0.CTRLE = ADC_WINCM0_bp;
-    ADC0.SAMPCTRL = ADC_SAMPLEN0_bp;
-    ADC0.MUXPOS = ADC_MUXPOS_AIN0_gc;
-    ADC0.MUXNEG = ADC_MUXNEG_GND_gc;
+    pid_cont = calloc(1, sizeof(PID_t));
+    pid_cont->Kp = 0.20;
+    pid_cont->Ki = 0.00005;
+    pid_cont->Kd = 0.05;
+    pid_cont->integ = 0.0;
+    pid_cont->min = -(double)max_speed;
+    pid_cont->max = (double)max_speed;
+    pid_cont->setpoint = 0.0;
+    pid_cont->prev_err = 0.0;
 }
 
 void init_rtc()
 {
     RTC.CTRLA = RTC_PRESCALER_DIV1_gc;
-    RTC.CLKSEL = CLKSEL_OSC32K_gc;
-    RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC256_gc;
+    RTC.CLKSEL = CLKSEL_OSC32K_gc; // 32768.0
+    RTC.PITCTRLA = RTC_PITEN_bm | RTC_PERIOD_CYC64_gc;
     RTC.PITINTCTRL = RTC_PI_bm;
 }
 
 void init_tca()
 {
-    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
-    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0_bm | TCA_SINGLE_CMP1_bm | TCA_SINGLE_WGMODE_DSBOTTOM_gc;
-    TCA0.SINGLE.PER = 32768;
+    TCA0.SINGLE.CTRLA = 0;
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_CMP1EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+    TCA0.SINGLE.PER = 255;
+    TCA0.SINGLE.CMP0BUF = 0;
+    TCA0.SINGLE.CMP1BUF = 0;
     PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
 }
 
 void init_pins()
 {
     // Initialize all pins
-    // PIN A - Motors
+    // TCA0 WO0/WO1 on PA0/PA1
     PORTA.DIRSET = PIN0_bm | PIN1_bm;
-    // PORTC.OUT = 0 | PIN_LEFT_MOTOR_A | PIN_LEFT_MOTOR_B | PIN_RIGHT_MOTOR_A | PIN_RIGHT_MOTOR_B;
 
-    // PIN D - Sensors
-    // PORTD.DIR = 0 | PIN_LEFT_IR_ANALOG | PIN_RIGHT_IR_ANALOG;
-    // PORTD.IN = 0 | PIN_LEFT_IR_ANALOG | PIN_RIGHT_IR_ANALOG;
+    PORTA.DIRCLR = BTN_PIN;
+    PORTA.PIN6CTRL = PORT_PULLUPEN_bm;
+}
+
+bool all_sensors_white(const uint16_t values[])
+{
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+    {
+        if (values[i] < WHITE_LEVEL_THRESHOLD)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+int16_t compute_line_error(const uint16_t values[])
+{
+    uint32_t weighted_sum = 0;
+    uint32_t strength_sum = 0;
+
+    for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
+    {
+        uint16_t level = values[i];
+        uint16_t strength = (level >= QTR_MAX_TIME) ? 0 : (uint16_t)(QTR_MAX_TIME - level);
+
+        if (strength < LINE_MIN_STRENGTH)
+        {
+            strength = 0;
+        }
+
+        strength_sum += strength;
+        weighted_sum += (uint32_t)strength * (uint32_t)(i * 1000U);
+    }
+
+    if (strength_sum == 0)
+    {
+        return previous_error;
+    }
+
+    int16_t position = (int16_t)(weighted_sum / strength_sum);
+    return (int16_t)(LINE_POSITION_CENTER - position);
+}
+
+int16_t clamp_speed(int16_t speed)
+{
+    if (speed > max_speed)
+    {
+        return max_speed;
+    }
+    if (speed < min_speed)
+    {
+        return min_speed;
+    }
+    return speed;
+}
+
+void motor_drive(int16_t left_speed, int16_t right_speed)
+{
+    float scale = echo_power_scale(echo);
+    left_speed = (int)clamp_speed(left_speed) * scale;
+    right_speed = (int)clamp_speed(right_speed) * scale;
+
+    TCA0.SINGLE.CMP0BUF = left_speed;
+    TCA0.SINGLE.CMP1BUF = right_speed;
 }
