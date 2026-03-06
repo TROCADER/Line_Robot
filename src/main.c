@@ -31,7 +31,7 @@ static int16_t min_speed = 0;
 static volatile int16_t previous_error = 0;
 
 static volatile bool motors_enabled = false;
-#define BTN_PIN PIN6_bm
+
 /**
  * prepare the re-routing of stdout to UART2
  */
@@ -223,8 +223,8 @@ void init_tca()
 void init_pins()
 {
     // Initialize all pins
-    // TCA0 split mode: WO0/PA0=IN1, WO1/PA1=IN3, WO2/PA2=IN2, WO3/PA3=IN4
-    PORTA.DIRSET = PIN0_bm | PIN1_bm | PIN2_bm | PIN3_bm;
+    // TCA0 WO0/WO1 on PA0/PA1
+    PORTA.DIRSET = PIN0_bm | PIN1_bm;
 
     PORTA.DIRCLR = BTN_PIN;
     PORTA.PIN6CTRL = PORT_PULLUPEN_bm;

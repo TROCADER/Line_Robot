@@ -6,7 +6,7 @@
 #define ON true
 #define OFF false
 
-#define QTR_TICKS_PER_US 2 // 4MHz / ((prescaler) 2 * 10^6) = 2 
+#define QTR_TICKS_PER_US 2 // 4MHz / ((prescaler) 2 * 10^6) = 2
 #define QTR_TIMEOUT_TICKS (QTR_MAX_TIME * QTR_TICKS_PER_US)
 
 static const uint8_t qtr_masks[QTR_SENSOR_COUNT] = {

@@ -9,3 +9,5 @@
 
 #define ECHO_TRIG_MASK PIN0_bm
 #define ECHO_ECHO_MASK PIN1_bm
+
+#define BTN_PIN PIN6_bm
