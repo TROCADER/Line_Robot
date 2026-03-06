@@ -27,7 +27,7 @@ static volatile uint16_t echo;
 
 static int16_t base_speed = 120;
 static int16_t max_speed = 200;
-static int16_t min_speed = -200;
+static int16_t min_speed = 0;
 static volatile int16_t previous_error = 0;
 
 static volatile bool motors_enabled = false;
@@ -144,8 +144,6 @@ ISR(RTC_PIT_vect)
         motor_drive(0, 0);
     }
 
-    // printf("Inter!\n");
-
     RTC.PITINTFLAGS = RTC_PI_bm; // Clear interrupt flag
 }
 
@@ -163,18 +161,18 @@ int main(void)
 
     while (true)
     {
-        handle_button();
-
-        uint16_t qtr_values[QTR_SENSOR_COUNT];
-        uint16_t distance_cm;
-
-        qtr_read(qtr_values, true);
-        
-        echo = echo_read();
-        distance_cm = echo_to_cm(echo);
-
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
         {
+            handle_button();
+
+            uint16_t qtr_values[QTR_SENSOR_COUNT];
+            uint16_t distance_cm;
+
+            qtr_read(qtr_values, true);
+
+            echo = echo_read();
+            distance_cm = echo_to_cm(echo);
+
             for (uint8_t i = 0; i < QTR_SENSOR_COUNT; i++)
             {
                 sensor[i] = qtr_values[i];
@@ -182,7 +180,7 @@ int main(void)
         }
 
         // printf("S: %u %u %u %u %u | ECHO(us): %u | DIST(cm): %u\n", sensor[0], sensor[1], sensor[2], sensor[3],
-            //    sensor[4], echo, distance_cm);
+        //        sensor[4], echo, distance_cm);
 
         _delay_ms(2);
     }
@@ -192,12 +190,8 @@ int main(void)
 
 void init_pid()
 {
-    // Ku = 0.4
-    // Tu = 0.5s = 500ms
-    // Ti = 0.5Tu = 250ms
     pid_cont = calloc(1, sizeof(PID_t));
-    //    pid_cont->Kp = 0.2;
-    pid_cont->Kp = 0.10;
+    pid_cont->Kp = 0.20;
     pid_cont->Ki = 0.00005;
     pid_cont->Kd = 0.05;
     pid_cont->integ = 0.0;
@@ -217,21 +211,13 @@ void init_rtc()
 
 void init_tca()
 {
-    TCA0.SINGLE.CTRLA = 0; // disable before configuring
-
-    // Split mode: 4 independent 8-bit PWM channels on PA0-PA3
-    // LCMP0=WO0/PA0=IN1, LCMP1=WO1/PA1=IN3, LCMP2=WO2/PA2=IN2, HCMP0=WO3/PA3=IN4
-    TCA0.SPLIT.CTRLD = TCA_SPLIT_SPLITM_bm;
-    TCA0.SPLIT.CTRLB = TCA_SPLIT_LCMP0EN_bm | TCA_SPLIT_LCMP1EN_bm |
-                       TCA_SPLIT_LCMP2EN_bm | TCA_SPLIT_HCMP0EN_bm;
-    TCA0.SPLIT.LPER  = 255;
-    TCA0.SPLIT.HPER  = 255;
-    TCA0.SPLIT.LCMP0 = 0; // IN1
-    TCA0.SPLIT.LCMP1 = 0; // IN3
-    TCA0.SPLIT.LCMP2 = 0; // IN2
-    TCA0.SPLIT.HCMP0 = 0; // IN4
+    TCA0.SINGLE.CTRLA = 0;
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_CMP1EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+    TCA0.SINGLE.PER = 255;
+    TCA0.SINGLE.CMP0BUF = 0;
+    TCA0.SINGLE.CMP1BUF = 0;
     PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
-    TCA0.SPLIT.CTRLA = TCA_SPLIT_CLKSEL_DIV64_gc | TCA_SPLIT_ENABLE_bm;
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm | TCA_SINGLE_CLKSEL_DIV64_gc;
 }
 
 void init_pins()
@@ -300,30 +286,10 @@ int16_t clamp_speed(int16_t speed)
 
 void motor_drive(int16_t left_speed, int16_t right_speed)
 {
-    left_speed  = clamp_speed(left_speed);
-    right_speed = clamp_speed(right_speed);
+    float scale = echo_power_scale(echo);
+    left_speed = (int)clamp_speed(left_speed) * scale;
+    right_speed = (int)clamp_speed(right_speed) * scale;
 
-    // Motor A: IN1=PA0 (forward), IN2=PA2 (reverse)
-    if (left_speed >= 0)
-    {
-        TCA0.SPLIT.LCMP0 = (uint8_t)left_speed;
-        TCA0.SPLIT.LCMP2 = 0;
-    }
-    else
-    {
-        TCA0.SPLIT.LCMP0 = 0;
-        TCA0.SPLIT.LCMP2 = (uint8_t)(-left_speed);
-    }
-
-    // Motor B: IN3=PA1 (forward), IN4=PA3 (reverse)
-    if (right_speed >= 0)
-    {
-        TCA0.SPLIT.LCMP1 = (uint8_t)right_speed;
-        TCA0.SPLIT.HCMP0 = 0;
-    }
-    else
-    {
-        TCA0.SPLIT.LCMP1 = 0;
-        TCA0.SPLIT.HCMP0 = (uint8_t)(-right_speed);
-    }
+    TCA0.SINGLE.CMP0BUF = left_speed;
+    TCA0.SINGLE.CMP1BUF = right_speed;
 }
