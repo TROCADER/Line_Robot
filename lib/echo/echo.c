@@ -6,6 +6,9 @@
 #define ECHO_TIMEOUT_US 30000U
 #define ECHO_TICKS_PER_US 2 // 4MHz / ((prescaler) 2 * 10^6) = 2 
 #define ECHO_TIMEOUT_TICKS (ECHO_TIMEOUT_US * ECHO_TICKS_PER_US)
+#define SPEED_OF_SOUND_CM_PER_S 34300UL
+#define MICROSECONDS_PER_SECOND 1000000UL
+#define ECHO_ROUND_TRIP_FACTOR 2UL
 
 void echo_init()
 {
@@ -59,7 +62,10 @@ uint16_t echo_to_cm(uint16_t pulse_us)
         return 0U;
     }
 
-    return (pulse_us / 58U);
+    uint32_t distance_numerator = (uint32_t)pulse_us * SPEED_OF_SOUND_CM_PER_S;
+    uint32_t distance_denominator = ECHO_ROUND_TRIP_FACTOR * MICROSECONDS_PER_SECOND;
+
+    return (uint16_t)(distance_numerator / distance_denominator);
 }
 
 float echo_power_scale(uint16_t pulse_us)
